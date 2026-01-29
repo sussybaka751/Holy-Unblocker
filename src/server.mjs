@@ -15,19 +15,10 @@ import { tryReadFile, preloaded404 } from './templates.mjs';
 import { fileURLToPath } from 'node:url';
 import { existsSync, unlinkSync } from 'node:fs';
 
-/* Record the server's location as a URL object, including its host and port.
- * The host can be modified at /src/config.json, whereas the ports can be modified
- * at /ecosystem.config.js.
- */
-console.log(serverUrl);
-
-// Wisp Configuration: Refer to the documentation at https://www.npmjs.com/package/@mercuryworkshop/wisp-js
-
 logging.set_level(logging.NONE);
 wisp.options.allow_udp_streams = false;
 wisp.options.allow_loopback_ips = true;
 
-// For security reasons only allow these ports. Any additional regional proxies or default sandboxed Tor ports should be added here.
 wisp.options.port_whitelist = [
   80,
   443,
@@ -36,8 +27,6 @@ wisp.options.port_whitelist = [
   7001
 ];
 
-// The server will check for the existence of this file when a shutdown is requested.
-// The shutdown script in run-command.js will temporarily produce this file.
 const shutdown = fileURLToPath(new URL('./.shutdown', import.meta.url));
 
 const rh = createRammerhead();
@@ -82,7 +71,6 @@ const rammerheadSession = new RegExp(
     rh.emit('upgrade', req, socket, head);
   };
 
-// Create a server factory for Rammerhead and Wisp
 const serverFactory = (handler) => {
   return createServer()
     .on('request', (req, res) => {
@@ -96,7 +84,6 @@ const serverFactory = (handler) => {
     });
 };
 
-// Set logger to true for logs.
 const app = Fastify({
   routerOptions: {
     ignoreDuplicateSlashes: true,
@@ -106,21 +93,20 @@ const app = Fastify({
   serverFactory: serverFactory,
 });
 
-// Apply Helmet middleware for security.
+// --- FIXED HELMET SECTION ---
 app.register(fastifyHelmet, {
-  contentSecurityPolicy: false, // Disable CSP
+  contentSecurityPolicy: false,
+  frameguard: false, // Disables X-Frame-Options: SAMEORIGIN
   xPoweredBy: false,
 });
+// ----------------------------
 
-// Assign server file paths to different paths, for serving content on the website.
 app.register(fastifyStatic, {
   root: fileURLToPath(new URL('../views/dist/pages', import.meta.url)),
   prefix: serverUrl.pathname,
   decorateReply: false,
 });
 
-// All entries in the dist folder are created with source rewrites.
-// Minified scripts are also served here, if minification is enabled.
 [
   'assets',
   'archive',
@@ -146,7 +132,6 @@ app.register(fastifyStatic, {
   decorateReply: false,
 });
 
-// You should NEVER commit roms, due to piracy concerns.
 ['cores', 'info', 'roms'].forEach((prefix) => {
   app.register(fastifyStatic, {
     root: fileURLToPath(
@@ -164,15 +149,6 @@ app.register(fastifyStatic, {
   prefix: getAltPrefix('uauth', serverUrl.pathname),
   decorateReply: false,
 });
-
-/* If you are trying to add pages or assets in the root folder and
- * NOT entire folders, check ./src/routes.mjs and add it manually.
- *
- * All website files are stored in the /views directory.
- * This takes one of those files and displays it for a site visitor.
- * Paths like /browsing are converted into paths like /views/dist/pages/surf.html
- * back here. Which path converts to what is defined in routes.mjs.
- */
 
 const supportedTypes = {
     default: config.disguiseFiles ? 'image/vnd.microsoft.icon' : 'text/html',
@@ -241,19 +217,8 @@ if (config.disguiseFiles) {
 }
 
 app.get(serverUrl.pathname + ':path', (req, reply) => {
-  // Testing for future features that need cookies to deliver alternate source files.
-  /*
-  if (req.raw.rawHeaders.includes('Cookie'))
-    console.log(
-      'cookie:',
-      req.raw.rawHeaders[req.raw.rawHeaders.indexOf('Cookie') + 1]
-    );
-  */
-
   const reqPath = req.params.path;
 
-  // Ignore browsers' automatic requests to favicon.ico, since it does not exist.
-  // This approach is needed for certain pages to not have an icon.
   if (reqPath === 'favicon.ico') {
     reply.send();
     return reply.hijack();
@@ -268,8 +233,6 @@ app.get(serverUrl.pathname + ':path', (req, reply) => {
     return reply.redirect(externalRoute);
   }
 
-  // If a GET request is sent to /test-shutdown and a script-generated shutdown file
-  // is present, gracefully shut the server down.
   if (reqPath === 'test-shutdown' && existsSync(shutdown)) {
     console.log('Holy Unblocker is shutting down.');
     app.close();
@@ -277,11 +240,9 @@ app.get(serverUrl.pathname + ':path', (req, reply) => {
     process.exitCode = 0;
   }
 
-  // Return the error page if the query is not found in routes.mjs.
   if (reqPath && !(reqPath in pages))
     return reply.code(404).type(supportedTypes.default).send(preloaded404);
 
-  // Serve the default page if the path is the default path.
   const fileName = reqPath ? pages[reqPath] : pages[pages.default],
     type =
       supportedTypes[fileName.slice(fileName.lastIndexOf('.') + 1)] ||
@@ -299,15 +260,10 @@ app.get(serverUrl.pathname + 'github/:redirect', (req, reply) => {
 });
 
 if (serverUrl.pathname === '/')
-  // Set an error page for invalid paths outside the query string system.
-  // If the server URL has a prefix, then avoid doing this for stealth reasons.
   app.setNotFoundHandler((req, reply) => {
     reply.code(404).type(supportedTypes.default).send(preloaded404);
   });
 else {
-  // Apply the following patch(es) if the server URL has a prefix.
-
-  // Patch to fix serving index.html.
   app.get(serverUrl.pathname, (req, reply) => {
     reply
       .type(supportedTypes.default)
@@ -315,10 +271,5 @@ else {
   });
 }
 
-app.listen({ port: serverUrl.port, host: serverUrl.hostname });
+app.listen({ port: serverUrl.port, host: serverUrl.hostname || '0.0.0.0' });
 console.log(`Holy Unblocker is listening on port ${serverUrl.port}.`);
-console.log(`When hosting with a reverse proxy please ensure you are using NGINX only.\nCaddy and Apache are not supported and have security risks due to wisp-js and loopbacks.\nPorts are whitelisted and security is maintained with NGINX only.`);
-if (config.disguiseFiles)
-  console.log(
-    'disguiseFiles is enabled. Visit src/routes.mjs to see the entry point, listed within the pages variable.'
-  );
